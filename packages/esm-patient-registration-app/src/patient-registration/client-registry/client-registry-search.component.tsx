@@ -13,30 +13,28 @@ import {
   TabPanels,
   TabPanel,
 } from '@carbon/react';
-import { showSnackbar, useSession } from '@openmrs/esm-framework';
+import { navigate, showSnackbar, useSession } from '@openmrs/esm-framework';
 import { useFormikContext } from 'formik';
 import styles from './client-registry-search.scss';
 import { requestCustomOtp, validateCustomOtp, fetchClientRegistryData } from './client-registry.resource';
 import { applyClientRegistryMapping } from './map-client-registry-to-form-utils';
 import ClientDetails from './client-details/client-details';
-import { type HieClient } from './types';
+import { type IdentifierType, type HieClient, IDENTIFIER_TYPES, IdentifierTypesUuids, HieDependant } from './types';
 import ClientDependantList from './client-dependants/list/client-depandants.component';
+import {
+  createPatientDependantRelationsips,
+  generateAmrsCreatePatientIdentifiersPayload,
+  generateAmrsPersonPayload,
+} from './hie-client-adapter';
+import { hieClientRespData } from './mock-client';
+import { createPatient } from '../client-registry-search/client-registry.resource';
+import { generateAmrsUniversalIdentifier } from '../patient-registration.resource';
 
 export interface ClientRegistryLookupSectionProps {
   onClientVerified?: () => void;
   onModalClose: () => void;
   open: boolean;
 }
-
-export type IdentifierType = 'National ID' | 'Alien ID' | 'Passport' | 'Mandate Number' | 'Refugee ID';
-
-export const IDENTIFIER_TYPES: IdentifierType[] = [
-  'National ID',
-  'Alien ID',
-  'Passport',
-  'Mandate Number',
-  'Refugee ID',
-];
 
 const ClientRegistryLookupSection: React.FC<ClientRegistryLookupSectionProps> = ({
   onClientVerified,
@@ -48,12 +46,12 @@ const ClientRegistryLookupSection: React.FC<ClientRegistryLookupSectionProps> = 
   const [identifierValue, setIdentifierValue] = useState('');
   const [otp, setOtp] = useState('');
   const [otpSent, setOtpSent] = useState(false);
-  const [otpVerified, setOtpVerified] = useState(false);
+  const [otpVerified, setOtpVerified] = useState(true);
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState('');
   const [error, setError] = useState<string>('');
   const { sessionLocation } = useSession();
-  const [client, setClient] = useState<HieClient>();
+  const [client, setClient] = useState<HieClient>(hieClientRespData[0] as HieClient);
   const locationUuid = sessionLocation?.uuid;
 
   async function withTimeout<T>(promise: Promise<T>, ms = 10000): Promise<T> {
@@ -179,11 +177,61 @@ const ClientRegistryLookupSection: React.FC<ClientRegistryLookupSectionProps> = 
   };
 
   const useHieData = () => {
-    applyClientRegistryMapping(client, setFieldValue);
+    // applyClientRegistryMapping(client, setFieldValue);
     onModalClose();
   };
   const registerOnAfyaYangu = () => {
     window.open('https://afyayangu.go.ke/', '_blank');
+  };
+  const registerPatient = async () => {
+    setLoading(true);
+    const identifierLocation = locationUuid;
+    const createPersonPayload = generateAmrsPersonPayload(client);
+    const amrsUniverSalId = await generateAmrsUniversalIdentifier();
+    if (amrsUniverSalId) {
+      showSnackbar({
+        kind: 'success',
+        title: 'AMRS Universal ID Successfully generated',
+        subtitle: `${amrsUniverSalId}`,
+      });
+    }
+    const identifiers = generateAmrsCreatePatientIdentifiersPayload(client, identifierLocation);
+    identifiers.push({
+      identifierType: IdentifierTypesUuids.AMRS_UNIVERSAL_ID_UUID,
+      identifier: amrsUniverSalId,
+      location: identifierLocation,
+      preferred: true,
+    });
+    const resp = await createPatient({
+      person: createPersonPayload,
+      identifiers: identifiers,
+    });
+
+    const res = await resp.json();
+    const patientUuid = res.uuid;
+
+    if (patientUuid) {
+      showSnackbar({
+        kind: 'success',
+        title: 'Patient Successfully registered',
+        subtitle: 'Patient created',
+      });
+    }
+
+    // add relationship/dependant data
+    if (client.dependants.length > 0) {
+      createPatientDependantRelationsips(patientUuid, client.dependants);
+
+      if (patientUuid) {
+        showSnackbar({
+          kind: 'success',
+          title: 'Patient Depandants crreated',
+          subtitle: 'Patient Depandants and relationships created',
+        });
+      }
+    }
+    setLoading(true);
+    navigate({ to: `${window.spaBase}/patient/${patientUuid}/chart/PatientSummary` });
   };
 
   return (
@@ -306,7 +354,9 @@ const ClientRegistryLookupSection: React.FC<ClientRegistryLookupSectionProps> = 
                   </TabPanel>
                 </TabPanels>
               </Tabs>
-              <Button onClick={useHieData}>Use Data</Button>
+              <Button kind="primary" onClick={registerPatient} disabled={loading}>
+                {loading ? <InlineLoading description="Registering patient..." /> : 'Register Patient'}
+              </Button>
             </div>
           ) : (
             <></>
